@@ -285,8 +285,22 @@
 
         switch (name) {
             case 'select2':
+                var formatFunc = function(m){
+                    if (m.text.indexOf('@') && m.text.substring(0, m.text.indexOf('@')).length > 0) {
+                        return "<img src='http://res.cloudinary.com/ho8jhcyuo/image/upload/c_limit,h_100,w_150/"
+                                + m.text.substring(0, m.text.indexOf('@')) + "' class='select2-icon'>"
+                                + m.text.substring(m.text.indexOf('@'), m.text.length);
+                    }
+                    return m.text;
+                };
                 var opts = {
-                    width: 'resolve'
+                    width: 'resolve',
+                    escapeMarkup: function(m) {
+                        // Do not escape HTML in the select options text
+                        return m;
+                    },
+                    formatResult: formatFunc,
+                    formatSelection: formatFunc
                 };
 
                 if ($el.attr('data-allow-blank'))
