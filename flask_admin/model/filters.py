@@ -1,7 +1,6 @@
 import time
 import datetime
 
-from flask_admin._compat import text_type
 from flask_admin.babel import lazy_gettext
 
 
@@ -39,7 +38,7 @@ class BaseFilter(object):
             if callable(options):
                 options = options()
 
-            return [(v, text_type(n)) for v, n in options]
+            return options
 
         return None
 
@@ -107,9 +106,12 @@ class BaseBooleanFilter(BaseFilter):
 class BaseIntFilter(BaseFilter):
     """
         Base Int filter. Adds validation and changes value to python int.
+
+        Avoid using int(float(value)) to also allow using decimals, because it
+        causes precision issues with large numbers.
     """
     def clean(self, value):
-        return int(float(value))
+        return int(value)
 
 
 class BaseFloatFilter(BaseFilter):
@@ -123,9 +125,12 @@ class BaseFloatFilter(BaseFilter):
 class BaseIntListFilter(BaseFilter):
     """
         Base Integer list filter. Adds validation for int "In List" filter.
+
+        Avoid using int(float(value)) to also allow using decimals, because it
+        causes precision issues with large numbers.
     """
     def clean(self, value):
-        return [int(float(v.strip())) for v in value.split(',') if v.strip()]
+        return [int(v.strip()) for v in value.split(',') if v.strip()]
 
 
 class BaseFloatListFilter(BaseFilter):

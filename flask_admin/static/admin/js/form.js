@@ -151,6 +151,8 @@
           // look up user's location by IP address
           $.getJSON("http://ip-api.com/json/?callback=?", function(data) {
             map.setView([data["lat"], data["lon"]], 12);
+          }).fail(function() {
+              map.setView([0, 0], 1)
           });
         }
 
@@ -272,11 +274,12 @@
                 return true;
         }
 
-        // make x-editable's POST act like a normal FieldList field
+        // make x-editable's POST compatible with WTForms
         // for x-editable, x-editable-combodate, and x-editable-boolean cases
         var overrideXeditableParams = function(params) {
             var newParams = {};
-            newParams[params.name + '-' + params.pk] = params.value;
+            newParams['list_form_pk'] = params.pk;
+            newParams[params.name] = params.value;
             if ($(this).data('csrf')) {
                 newParams['csrf_token'] = $(this).data('csrf');
             }
@@ -465,6 +468,30 @@
                     }
                 });
                 return true;
+            case 'x-editable-select2-multiple':
+                $el.editable({
+                    params: overrideXeditableParams,
+                    ajaxOptions: {
+                        // prevents keys with the same value from getting converted into arrays
+                        traditional: true
+                    },
+                    select2: {
+                        multiple: true
+                    },
+                    display: function(value) {
+                        // override to display text instead of ids on list view
+                        var html = [];
+                        var data = $.fn.editableutils.itemsByValue(value, $el.data('source'), 'id');
+
+                        if(data.length) {
+                            $.each(data, function(i, v) { html.push($.fn.editableutils.escape(v.text)); });
+                            $(this).html(html.join(', '));
+                        } else {
+                            $(this).empty();
+                        }
+                    }
+                });
+                return true;
             case 'x-editable-boolean':
                 $el.editable({
                     params: overrideXeditableParams,
@@ -498,7 +525,10 @@
         var $parentForm = $el.parent().closest('.inline-field');
 
         if ($parentForm.hasClass('fresh')) {
-          id = $parentForm.attr('id') + '-' + elID;
+          id = $parentForm.attr('id');
+          if (elID) {
+            id += '-' + elID;
+          }
         }
 
         var $fieldList = $el.find('> .inline-field-list');

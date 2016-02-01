@@ -216,6 +216,24 @@ class BaseView(with_metaclass(AdminViewMeta, BaseViewClass)):
 
         return self.__class__.__name__.lower()
 
+    def _get_view_url(self, admin, url):
+        """
+            Generate URL for the view. Override to change default behavior.
+        """
+        if url is None:
+            if admin.url != '/':
+                url = '%s/%s' % (admin.url, self.endpoint)
+            else:
+                if self == admin.index_view:
+                    url = '/'
+                else:
+                    url = '/%s' % self.endpoint
+        else:
+            if not url.startswith('/'):
+                url = '%s/%s' % (admin.url, url)
+
+        return url
+
     def create_blueprint(self, admin):
         """
             Create Flask blueprint.
@@ -227,18 +245,8 @@ class BaseView(with_metaclass(AdminViewMeta, BaseViewClass)):
         if not self.static_url_path:
             self.static_url_path = admin.static_url_path
 
-        # If url is not provided, generate it from endpoint name
-        if self.url is None:
-            if self.admin.url != '/':
-                self.url = '%s/%s' % (self.admin.url, self.endpoint)
-            else:
-                if self == admin.index_view:
-                    self.url = '/'
-                else:
-                    self.url = '/%s' % self.endpoint
-        else:
-            if not self.url.startswith('/'):
-                self.url = '%s/%s' % (self.admin.url, self.url)
+        # Generate URL
+        self.url = self._get_view_url(admin, self.url)
 
         # If we're working from the root of the site, set prefix to None
         if self.url == '/':
@@ -454,7 +462,8 @@ class Admin(object):
                  endpoint=None,
                  static_url_path=None,
                  base_template=None,
-                 template_mode=None):
+                 template_mode=None,
+                 category_icon_classes=None):
         """
             Constructor.
 
@@ -482,6 +491,9 @@ class Admin(object):
             :param template_mode:
                 Base template path. Defaults to `bootstrap2`. If you want to use
                 Bootstrap 3 integration, change it to `bootstrap3`.
+            :param category_icon_classes:
+                A dict of category names as keys and html classes as values to be added to menu category icons.
+                Example: {'Favorites': 'glyphicon glyphicon-star'}
         """
         self.app = app
 
@@ -503,6 +515,7 @@ class Admin(object):
         self.subdomain = subdomain
         self.base_template = base_template or 'admin/base.html'
         self.template_mode = template_mode or 'bootstrap2'
+        self.category_icon_classes = category_icon_classes or dict()
 
         # Add predefined index view
         self.add_view(self.index_view)
@@ -527,6 +540,22 @@ class Admin(object):
 
         self._add_view_to_menu(view)
 
+    def add_views(self, *args):
+        """
+            Add one or more views to the collection.
+
+            Examples::
+
+                admin.add_views(view1)
+                admin.add_views(view1, view2, view3, view4)
+                admin.add_views(*my_list)
+
+            :param args:
+                Argument list including the views to add.
+        """
+        for view in args:
+            self.add_view(view)
+
     def add_link(self, link):
         """
             Add link to menu links collection.
@@ -539,14 +568,32 @@ class Admin(object):
         else:
             self._menu_links.append(link)
 
+    def add_links(self, *args):
+        """
+            Add one or more links to the menu links collection.
+
+            Examples::
+
+                admin.add_links(link1)
+                admin.add_links(link1, link2, link3, link4)
+                admin.add_links(*my_list)
+
+            :param args:
+                Argument list including the links to add.
+        """
+        for link in args:
+            self.add_link(link)
+
     def _add_menu_item(self, menu_item, target_category):
         if target_category:
             cat_text = as_unicode(target_category)
 
             category = self._menu_categories.get(cat_text)
 
+            # create a new menu category if one does not exist already
             if category is None:
                 category = MenuCategory(target_category)
+                category.class_name = self.category_icon_classes.get(cat_text)
                 self._menu_categories[cat_text] = category
 
                 self._menu.append(category)

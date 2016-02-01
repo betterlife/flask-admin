@@ -4,18 +4,18 @@ import inspect
 
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.orm import joinedload, aliased
-from sqlalchemy.sql.expression import desc
+from sqlalchemy.sql.expression import desc, ColumnElement
 from sqlalchemy import Boolean, Table, func, or_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql.expression import cast
+from sqlalchemy import Unicode
 
 from flask import flash
 
 from flask_admin._compat import string_types, text_type
 from flask_admin.babel import gettext, ngettext, lazy_gettext
 from flask_admin.model import BaseModelView
-from flask_admin.model.form import wrap_fields_in_fieldlist
-from flask_admin.model.fields import ListEditableFieldList
-
+from flask_admin.model.form import create_editable_list_form
 from flask_admin.actions import action
 from flask_admin._backwards import ObsoleteAttr
 
@@ -96,26 +96,29 @@ class ModelView(BaseModelView):
 
         The following search rules apply:
 
-        - If you enter *ZZZ* in the UI search field, it will generate *ILIKE '%ZZZ%'*
+        - If you enter ``ZZZ`` in the UI search field, it will generate ``ILIKE '%ZZZ%'``
           statement against searchable columns.
 
         - If you enter multiple words, each word will be searched separately, but
           only rows that contain all words will be displayed. For example, searching
-          for 'abc def' will find all rows that contain 'abc' and 'def' in one or
+          for ``abc def`` will find all rows that contain ``abc`` and ``def`` in one or
           more columns.
 
-        - If you prefix your search term with ^, it will find all rows
-          that start with ^. So, if you entered *^ZZZ*, *ILIKE 'ZZZ%'* will be used.
+        - If you prefix your search term with ``^``, it will find all rows
+          that start with ``^``. So, if you entered ``^ZZZ`` then ``ILIKE 'ZZZ%'`` will be used.
 
-        - If you prefix your search term with =, it will perform an exact match.
-          For example, if you entered *=ZZZ*, the statement *ILIKE 'ZZZ'* will be used.
+        - If you prefix your search term with ``=``, it will perform an exact match.
+          For example, if you entered ``=ZZZ``, the statement ``ILIKE 'ZZZ'`` will be used.
     """
 
     column_filters = None
     """
         Collection of the column filters.
 
-        Can contain either field names or instances of :class:`flask_admin.contrib.sqla.filters.BaseFilter` classes.
+        Can contain either field names or instances of
+        :class:`flask_admin.contrib.sqla.filters.BaseSQLAFilter` classes.
+
+        Filters will be grouped by name when displayed in the drop-down.
 
         For example::
 
@@ -124,8 +127,31 @@ class ModelView(BaseModelView):
 
         or::
 
+            from flask_admin.contrib.sqla.filters import BooleanEqualFilter
+
             class MyModelView(BaseModelView):
-                column_filters = (BooleanEqualFilter(User.name, 'Name'))
+                column_filters = (BooleanEqualFilter(column=User.name, name='Name'),)
+
+        or::
+
+            from flask_admin.contrib.sqla.filters import BaseSQLAFilter
+
+            class FilterLastNameBrown(BaseSQLAFilter):
+                def apply(self, query, value, alias=None):
+                    if value == '1':
+                        return query.filter(self.column == "Brown")
+                    else:
+                        return query.filter(self.column != "Brown")
+
+                def operation(self):
+                    return 'is Brown'
+
+            class MyModelView(BaseModelView):
+                column_filters = [
+                    FilterLastNameBrown(
+                        User.last_name, 'Last Name', options=(('1', 'Yes'), ('0', 'No'))
+                    )
+                ]
     """
 
     model_form_converter = form.AdminModelConverter
@@ -147,7 +173,7 @@ class ModelView(BaseModelView):
         Inline model conversion class. If you need some kind of post-processing for inline
         forms, you can customize behavior by doing something like this::
 
-            class MyInlineModelConverter(AdminModelConverter):
+            class MyInlineModelConverter(InlineModelConverter):
                 def post_process(self, form_class, info):
                     form_class.value = wtf.StringField('value')
                     return form_class
@@ -170,9 +196,9 @@ class ModelView(BaseModelView):
         giving SQLAlchemy a chance to manually cleanup any dependencies (many-to-many
         relationships, etc).
 
-        If set to `True`, will run a `DELETE` statement which is somewhat faster,
-        but may leave corrupted data if you forget to configure `DELETE
-        CASCADE` for your model.
+        If set to `True`, will run a ``DELETE`` statement which is somewhat faster,
+        but may leave corrupted data if you forget to configure ``DELETE
+        CASCADE`` for your model.
     """
 
     inline_models = None
@@ -201,12 +227,12 @@ class ModelView(BaseModelView):
 
         You can customize the generated field name by:
 
-        1. Using the `form_name` property as a key to the options dictionary:
+        1. Using the `form_name` property as a key to the options dictionary::
 
             class MyModelView(ModelView):
                 inline_models = ((Post, dict(form_label='Hello')))
 
-        2. Using forward relation name and `column_labels` property:
+        2. Using forward relation name and `column_labels` property::
 
             class Model1(Base):
                 pass
@@ -231,7 +257,7 @@ class ModelView(BaseModelView):
             class MyModelView(BaseModelView):
                 form_choices = {'my_form_field': [
                     ('db_value', 'display_value'),
-                ]
+                ]}
     """
 
     form_optional_types = (Boolean,)
@@ -550,8 +576,11 @@ class ModelView(BaseModelView):
         if attr is None:
             raise Exception('Failed to find field for filter: %s' % name)
 
-        # Figure out filters for related column
-        if hasattr(attr, 'property') and hasattr(attr.property, 'direction'):
+        # Figure out filters for related column, unless it's a hybrid_property
+        if isinstance(attr, ColumnElement):
+            warnings.warn(('Unable to scaffold the filter for %s, scaffolding '
+                           'for hybrid_property is not supported yet.') % name)
+        elif hasattr(attr, 'property') and hasattr(attr.property, 'direction'):
             filters = []
 
             for p in self._get_model_iterator(attr.property.mapper.class_):
@@ -620,7 +649,9 @@ class ModelView(BaseModelView):
         if isinstance(filter, sqla_filters.BaseSQLAFilter):
             column = filter.column
 
-            if self._need_join(column.table):
+            # hybrid_property joins are not supported yet
+            if (isinstance(column, InstrumentedAttribute) and
+                    self._need_join(column.table)):
                 self._filter_joins[column] = [column.table]
 
         return filter
@@ -642,17 +673,16 @@ class ModelView(BaseModelView):
 
         return form_class
 
-    def scaffold_list_form(self, custom_fieldlist=ListEditableFieldList,
-                           validators=None):
+    def scaffold_list_form(self, widget=None, validators=None):
         """
             Create form for the `index_view` using only the columns from
             `self.column_editable_list`.
 
+            :param widget:
+                WTForms widget class. Defaults to `XEditableWidget`.
             :param validators:
                 `form_args` dict with only validators
                 {'name': {'validators': [required()]}}
-            :param custom_fieldlist:
-                A WTForm FieldList class. By default, `ListEditableFieldList`.
         """
         converter = self.model_form_converter(self.session, self)
         form_class = form.get_form(self.model, converter,
@@ -660,9 +690,8 @@ class ModelView(BaseModelView):
                                    only=self.column_editable_list,
                                    field_args=validators)
 
-        return wrap_fields_in_fieldlist(self.form_base_class,
-                                        form_class,
-                                        custom_fieldlist)
+        return create_editable_list_form(self.form_base_class, form_class,
+                                         widget)
 
     def scaffold_inline_form_models(self, form_class):
         """
@@ -732,10 +761,10 @@ class ModelView(BaseModelView):
         """
             Return a the count query for the model type
 
-            A query(self.model).count() approach produces an excessive
-            subquery, so query(func.count('*')) should be used instead.
+            A ``query(self.model).count()`` approach produces an excessive
+            subquery, so ``query(func.count('*'))`` should be used instead.
 
-            See #45a2723 commit message for details.
+            See commit ``#45a2723`` for details.
         """
         return self.session.query(func.count('*')).select_from(self.model)
 
@@ -823,11 +852,11 @@ class ModelView(BaseModelView):
                                                                                    inner_join=False)
 
                 column = field if alias is None else getattr(alias, field.key)
-                filter_stmt.append(column.ilike(stmt))
+                filter_stmt.append(cast(column, Unicode).ilike(stmt))
 
                 if count_filter_stmt is not None:
                     column = field if count_alias is None else getattr(count_alias, field.key)
-                    count_filter_stmt.append(column.ilike(stmt))
+                    count_filter_stmt.append(cast(column, Unicode).ilike(stmt))
 
             query = query.filter(or_(*filter_stmt))
 
@@ -864,7 +893,7 @@ class ModelView(BaseModelView):
             except TypeError:
                 spec = inspect.getargspec(flt.apply)
 
-                if len(spec.args) == 2:
+                if len(spec.args) == 3:
                     warnings.warn('Please update your custom filter %s to include additional `alias` parameter.' % repr(flt))
                 else:
                     raise
@@ -879,9 +908,22 @@ class ModelView(BaseModelView):
 
         return query, count_query, joins, count_joins
 
-    def get_list(self, page, sort_column, sort_desc, search, filters, execute=True):
+    def _apply_pagination(self, query, page, page_size):
+        if page_size is None:
+            page_size = self.page_size
+
+        if page_size:
+            query = query.limit(page_size)
+
+        if page and page_size:
+            query = query.offset(page * page_size)
+
+        return query
+
+    def get_list(self, page, sort_column, sort_desc, search, filters,
+                 execute=True, page_size=None):
         """
-            Return models from the database.
+            Return records from the database.
 
             :param page:
                 Page number
@@ -895,6 +937,10 @@ class ModelView(BaseModelView):
                 Execute query immediately? Default is `True`
             :param filters:
                 List of filter tuples
+            :param page_size:
+                Number of results. Defaults to ModelView's page_size. Can be
+                overriden to change the page_size limit. Removing the page_size
+                limit requires setting page_size to 0 or False.
         """
 
         # Will contain join paths with optional aliased object
@@ -938,10 +984,7 @@ class ModelView(BaseModelView):
         query, joins = self._apply_sorting(query, joins, sort_column, sort_desc)
 
         # Pagination
-        if page is not None:
-            query = query.offset(page * self.page_size)
-
-        query = query.limit(self.page_size)
+        query = self._apply_pagination(query, page, page_size)
 
         # Execute if needed
         if execute:

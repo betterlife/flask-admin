@@ -5,22 +5,18 @@ from sqlalchemy import Boolean, Column
 
 from flask_admin import form
 from flask_admin.model.form import (converts, ModelConverterBase,
-                                        InlineModelConverterBase, FieldPlaceholder)
+                                    InlineModelConverterBase, FieldPlaceholder)
 from flask_admin.model.fields import AjaxSelectField, AjaxSelectMultipleField
 from flask_admin.model.helpers import prettify_name
 from flask_admin._backwards import get_property
 from flask_admin._compat import iteritems
 
 from .validators import Unique
-from .fields import QuerySelectField, QuerySelectMultipleField, InlineModelFormList
+from .fields import (QuerySelectField, QuerySelectMultipleField,
+                     InlineModelFormList, InlineHstoreList, HstoreForm)
+from flask_admin.model.fields import InlineFormField
 from .tools import has_multiple_pks, filter_foreign_columns
 from .ajax import create_ajax_loader
-
-try:
-    # Field has better input parsing capabilities.
-    from wtforms.ext.dateutil.fields import DateTimeField
-except ImportError:
-    from wtforms.fields import DateTimeField
 
 
 class AdminModelConverter(ModelConverterBase):
@@ -84,12 +80,6 @@ class AdminModelConverter(ModelConverterBase):
         if 'query_factory' not in kwargs:
             kwargs['query_factory'] = lambda: self.session.query(remote_model)
 
-        if 'widget' not in kwargs:
-            if multiple:
-                kwargs['widget'] = form.Select2Widget(multiple=True)
-            else:
-                kwargs['widget'] = form.Select2Widget()
-
         if multiple:
             return QuerySelectMultipleField(**kwargs)
         else:
@@ -149,6 +139,10 @@ class AdminModelConverter(ModelConverterBase):
         if field_args:
             kwargs.update(field_args)
 
+        if kwargs['validators']:
+            # Create a copy of the list since we will be modifying it.
+            kwargs['validators'] = list(kwargs['validators'])
+
         # Check if it is relation or property
         if hasattr(prop, 'direction'):
             return self._convert_relation(prop, kwargs)
@@ -205,7 +199,12 @@ class AdminModelConverter(ModelConverterBase):
 
                 optional_types = getattr(self.view, 'form_optional_types', (Boolean,))
 
-                if not column.nullable and not isinstance(column.type, optional_types):
+                if (
+                    not column.nullable
+                    and not isinstance(column.type, optional_types)
+                    and not column.default
+                    and not column.server_default
+                ):
                     kwargs['validators'].append(validators.InputRequired())
 
                 # Apply label and description if it isn't inline form field
@@ -264,14 +263,22 @@ class AdminModelConverter(ModelConverterBase):
 
     @classmethod
     def _string_common(cls, column, field_args, **extra):
-        if column.type.length:
+        if isinstance(column.type.length, int) and column.type.length:
             field_args['validators'].append(validators.Length(max=column.type.length))
 
-    @converts('String', 'Unicode')
+    @converts('String')  # includes VARCHAR, CHAR, and Unicode
     def conv_String(self, column, field_args, **extra):
         if hasattr(column.type, 'enums'):
-            field_args['validators'].append(validators.AnyOf(column.type.enums))
+            accepted_values = list(column.type.enums)
+
             field_args['choices'] = [(f, f) for f in column.type.enums]
+
+            if column.nullable:
+                field_args['allow_blank'] = column.nullable
+                accepted_values.append(None)
+
+            field_args['validators'].append(validators.AnyOf(accepted_values))
+
             return form.Select2Field(**field_args)
 
         if column.nullable:
@@ -282,13 +289,12 @@ class AdminModelConverter(ModelConverterBase):
         self._string_common(column=column, field_args=field_args, **extra)
         return fields.StringField(**field_args)
 
-    @converts('Text', 'UnicodeText',
-              'sqlalchemy.types.LargeBinary', 'sqlalchemy.types.Binary')
+    @converts('Text', 'LargeBinary', 'Binary')  # includes UnicodeText
     def conv_Text(self, field_args, **extra):
         self._string_common(field_args=field_args, **extra)
         return fields.TextAreaField(**field_args)
 
-    @converts('Boolean')
+    @converts('Boolean', 'sqlalchemy.dialects.mssql.base.BIT')
     def conv_Boolean(self, field_args, **extra):
         return fields.BooleanField(**field_args)
 
@@ -297,7 +303,7 @@ class AdminModelConverter(ModelConverterBase):
         field_args['widget'] = form.DatePickerWidget()
         return fields.DateField(**field_args)
 
-    @converts('DateTime')
+    @converts('DateTime')  # includes TIMESTAMP
     def convert_datetime(self, field_args, **extra):
         return form.DateTimeField(**field_args)
 
@@ -305,38 +311,32 @@ class AdminModelConverter(ModelConverterBase):
     def convert_time(self, field_args, **extra):
         return form.TimeField(**field_args)
 
-    @converts('Integer', 'SmallInteger')
+    @converts('Integer')  # includes BigInteger and SmallInteger
     def handle_integer_types(self, column, field_args, **extra):
         unsigned = getattr(column.type, 'unsigned', False)
         if unsigned:
             field_args['validators'].append(validators.NumberRange(min=0))
         return fields.IntegerField(**field_args)
 
-    @converts('Numeric', 'Float')
+    @converts('Numeric')  # includes DECIMAL, Float/FLOAT, REAL, and DOUBLE
     def handle_decimal_types(self, column, field_args, **extra):
-        places = getattr(column.type, 'scale', 2)
-        if places is not None:
-            field_args['places'] = places
+        # override default decimal places limit, use database defaults instead
+        field_args.setdefault('places', None)
         return fields.DecimalField(**field_args)
 
-    @converts('databases.mysql.MSYear')
-    def conv_MSYear(self, field_args, **extra):
-        field_args['validators'].append(validators.NumberRange(min=1901, max=2155))
-        return fields.StringField(**field_args)
-
-    @converts('databases.postgres.PGInet', 'dialects.postgresql.base.INET')
+    @converts('sqlalchemy.dialects.postgresql.base.INET')
     def conv_PGInet(self, field_args, **extra):
         field_args.setdefault('label', u'IP Address')
         field_args['validators'].append(validators.IPAddress())
         return fields.StringField(**field_args)
 
-    @converts('dialects.postgresql.base.MACADDR')
+    @converts('sqlalchemy.dialects.postgresql.base.MACADDR')
     def conv_PGMacaddr(self, field_args, **extra):
         field_args.setdefault('label', u'MAC Address')
         field_args['validators'].append(validators.MacAddress())
         return fields.StringField(**field_args)
 
-    @converts('dialects.postgresql.base.UUID')
+    @converts('sqlalchemy.dialects.postgresql.base.UUID')
     def conv_PGUuid(self, field_args, **extra):
         field_args.setdefault('label', u'UUID')
         field_args['validators'].append(validators.UUID())
@@ -345,6 +345,11 @@ class AdminModelConverter(ModelConverterBase):
     @converts('sqlalchemy.dialects.postgresql.base.ARRAY')
     def conv_ARRAY(self, field_args, **extra):
         return form.Select2TagsField(save_as_list=True, **field_args)
+
+    @converts('HSTORE')
+    def conv_HSTORE(self, field_args, **extra):
+        inner_form = field_args.pop('form', HstoreForm)
+        return InlineHstoreList(InlineFormField(inner_form), **field_args)
 
 
 def _resolve_prop(prop):
@@ -596,10 +601,12 @@ class InlineModelConverter(InlineModelConverterBase):
         if child_form is None:
             child_form = get_form(info.model,
                                   converter,
+                                  base_class=info.form_base_class or form.BaseForm,
                                   only=info.form_columns,
                                   exclude=exclude,
                                   field_args=info.form_args,
-                                  hidden_pk=True)
+                                  hidden_pk=True,
+                                  extra_fields=info.form_extra_fields)
 
         # Post-process form
         child_form = info.postprocess_form(child_form)

@@ -1,50 +1,40 @@
-{%- if not request.args.get('modal') -%}
-    {% extends 'admin/master.html' %}
-{%- endif -%}
+{% extends 'admin/master.html' %}
 {% import 'admin/lib.html' as lib with context %}
-
-{% macro extra() %}
-  <input name="_continue_editing" type="submit" class="btn btn-large" value="{{ _gettext('Save and Continue') }}" />
-{% endmacro %}
+{% from 'admin/lib.html' import extra with context %} {# backward compatible #}
 
 {% block head %}
-  {%- if not request.args.get('modal') -%}
-    {{ super() }}
-    {{ lib.form_css() }}
-  {%- endif -%}
+  {{ super() }}
+  {{ lib.form_css() }}
 {% endblock %}
 
 {% block body %}
-    {%- if request.args.get('modal') -%}
-      {# remove save and continue button for modal (it won't function properly) #}
-      {{ lib.render_form(form, return_url, extra=None, form_opts=form_opts,
-                         action=url_for('.edit_view', id=request.args.get('id'), url=return_url),
-                         is_modal=request.args.get('modal')) }}
-    {%- else -%}
-      {{ lib.render_form(form, return_url, extra(), form_opts,
-                         action=url_for('.edit_view', id=request.args.get('id'), url=return_url),
-                         is_modal=request.args.get('modal')) }}
+  {% block navlinks %}
+  <ul class="nav nav-tabs">
+    <li>
+        <a href="{{ return_url }}">{{ _gettext('List') }}</a>
+    </li>
+    {%- if admin_view.can_create -%}
+    <li>
+        <a href="{{ get_url('.create_view', url=return_url) }}">{{ _gettext('Create') }}</a>
+    </li>
     {%- endif -%}
+    <li class="active">
+        <a href="javascript:void(0)">{{ _gettext('Edit') }}</a>
+    </li>
+    {%- if admin_view.can_view_details -%}
+    <li>
+        <a href="{{ get_url('.details_view', id=request.args.get('id'), url=return_url) }}">{{ _gettext('Details') }}</a>
+    </li>
+    {%- endif -%}
+  </ul>
+  {% endblock %}
+
+  {% block edit_form %}
+    {{ lib.render_form(form, return_url, extra(), form_opts) }}
+  {% endblock %}
 {% endblock %}
 
 {% block tail %}
-    {%- if request.args.get('modal') -%}
-      <script>
-      // fill the header of modal dynamically
-      $('.modal-header h3').html('{% block modal_header %}<h3>{{ _gettext('Edit Record') + ' #' + request.args.get('id') }}</h3>{% endblock %}');
-
-      // fixes "remote modal shows same content every time"
-      $('.modal').on('hidden', function() {
-        $(this).removeData('modal');
-      });
-
-      $(function() {
-        // Apply flask-admin global styles after the modal is loaded
-        window.faForm.applyGlobalStyles(document);
-      });
-      </script>
-    {%- else -%}
-      {{ super() }}
-      {{ lib.form_js() }}
-    {%- endif -%}
+  {{ super() }}
+  {{ lib.form_js() }}
 {% endblock %}

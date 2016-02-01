@@ -1,60 +1,30 @@
-{%- if not request.args.get('modal') -%}
-    {% extends 'admin/master.html' %}
-{%- endif -%}
+{% extends 'admin/master.html' %}
 {% import 'admin/lib.html' as lib with context %}
-
-{% macro extra() %}
-  <input name="_add_another" type="submit" class="btn btn-large" value="{{ _gettext('Save and Add') }}" />
-{% endmacro %}
+{% from 'admin/lib.html' import extra with context %} {# backward compatible #}
 
 {% block head %}
-  {%- if not request.args.get('modal') -%}
-    {{ super() }}
-    {{ lib.form_css() }}
-  {%- endif -%}
+  {{ super() }}
+  {{ lib.form_css() }}
 {% endblock %}
 
 {% block body %}
-  {%- if request.args.get('modal') -%}
-    {{ lib.render_form(form, return_url, extra=None, form_opts=form_opts,
-                       action=url_for('.create_view', url=return_url),
-                       is_modal=request.args.get('modal')) }}
-  {%- else -%}
-    {% block navlinks %}
-      <ul class="nav nav-tabs">
-        <li>
-            <a href="{{ return_url }}">{{ _gettext('List') }}</a>
-        </li>
-        <li class="active">
-            <a href="javascript:void(0)">{{ _gettext('Create') }}</a>
-        </li>
-	  </ul>
-    {% endblock %}
+  {% block navlinks %}
+  <ul class="nav nav-tabs">
+    <li>
+        <a href="{{ return_url }}">{{ _gettext('List') }}</a>
+    </li>
+    <li class="active">
+        <a href="javascript:void(0)">{{ _gettext('Create') }}</a>
+    </li>
+  </ul>
+  {% endblock %}
 
-    {{ lib.render_form(form, return_url, extra(), form_opts=form_opts,
-                       action=url_for('.create_view', url=return_url),
-                       is_modal=request.args.get('modal')) }}
-  {%- endif -%}
+  {% block create_form %}
+    {{ lib.render_form(form, return_url, extra(), form_opts) }}
+  {% endblock %}
 {% endblock %}
 
 {% block tail %}
-  {%- if request.args.get('modal') -%}
-    <script>
-    // fill the header of modal dynamically
-    $('.modal-header h3').html('{% block modal_header %}<h3>{{ _gettext('Create New Record') }}</h3>{% endblock %}');
-
-    // fixes "remote modal shows same content every time"
-    $('.modal').on('hidden', function() {
-      $(this).removeData('modal');
-    });
-
-    $(function() {
-      // Apply flask-admin global styles after the modal is loaded
-      window.faForm.applyGlobalStyles(document);
-    });
-    </script>
-  {%- else -%}
-    {{ super() }}
-    {{ lib.form_js() }}
-  {%- endif -%}
+  {{ super() }}
+  {{ lib.form_js() }}
 {% endblock %}

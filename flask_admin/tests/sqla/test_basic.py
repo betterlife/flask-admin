@@ -1,12 +1,14 @@
 from nose.tools import eq_, ok_, raises, assert_true
 
-from wtforms import fields
+from wtforms import fields, validators
 
 from flask_admin import form
 from flask_admin._compat import as_unicode
 from flask_admin._compat import iteritems
 from flask_admin.contrib.sqla import ModelView, filters
 from flask_babelex import Babel
+
+from sqlalchemy.ext.hybrid import hybrid_property
 
 from . import setup
 
@@ -59,15 +61,22 @@ def create_models(db):
 
     class Model2(db.Model):
         def __init__(self, string_field=None, int_field=None, bool_field=None,
-                     model1=None, float_field=None):
+                     model1=None, float_field=None, string_field_default=None,
+                     string_field_empty_default=None):
             self.string_field = string_field
             self.int_field = int_field
             self.bool_field = bool_field
             self.model1 = model1
             self.float_field = float_field
+            self.string_field_default = string_field_default
+            self.string_field_empty_default = string_field_empty_default
 
         id = db.Column(db.Integer, primary_key=True)
         string_field = db.Column(db.String)
+        string_field_default = db.Column(db.Text, nullable=False,
+                                         default='')
+        string_field_empty_default = db.Column(db.Text, nullable=False,
+                                               default='')
         int_field = db.Column(db.Integer)
         bool_field = db.Column(db.Boolean)
         enum_field = db.Column(db.Enum('model2_v1', 'model2_v2'), nullable=True)
@@ -84,7 +93,7 @@ def create_models(db):
 
 def fill_db(db, Model1, Model2):
     model1_obj1 = Model1('test1_val_1', 'test2_val_1', bool_field=True)
-    model1_obj2 = Model1('test1_val_2', 'test2_val_2')
+    model1_obj2 = Model1('test1_val_2', 'test2_val_2', bool_field=False)
     model1_obj3 = Model1('test1_val_3', 'test2_val_3')
     model1_obj4 = Model1('test1_val_4', 'test2_val_4')
 
@@ -92,6 +101,7 @@ def fill_db(db, Model1, Model2):
     model2_obj2 = Model2('test2_val_2', model1=model1_obj2, float_field=None)
     model2_obj3 = Model2('test2_val_3', int_field=5000, float_field=25.9)
     model2_obj4 = Model2('test2_val_4', int_field=9000, float_field=75.5)
+    model2_obj5 = Model2('test2_val_5', int_field=6169453081680413441)
 
     date_obj1 = Model1('date_obj1', date_field=date(2014,11,17))
     date_obj2 = Model1('date_obj2', date_field=date(2013,10,16))
@@ -107,7 +117,7 @@ def fill_db(db, Model1, Model2):
 
     db.session.add_all([
         model1_obj1, model1_obj2, model1_obj3, model1_obj4,
-        model2_obj1, model2_obj2, model2_obj3, model2_obj4,
+        model2_obj1, model2_obj2, model2_obj3, model2_obj4, model2_obj5,
         date_obj1, timeonly_obj1, datetime_obj1,
         date_obj2, timeonly_obj2, datetime_obj2,
         enum_obj1, enum_obj2, empty_obj
@@ -344,8 +354,7 @@ def test_column_editable_list():
     Model1, Model2 = create_models(db)
 
     view = CustomModelView(Model1, db.session,
-                           column_editable_list=[
-                               'test1', 'enum_field'])
+                           column_editable_list=['test1', 'enum_field'])
     admin.add_view(view)
 
     fill_db(db, Model1, Model2)
@@ -359,7 +368,8 @@ def test_column_editable_list():
 
     # Form - Test basic in-line edit functionality
     rv = client.post('/admin/model1/ajax/update/', data={
-        'test1-1': 'change-success-1',
+        'list_form_pk': '1',
+        'test1': 'change-success-1',
     })
     data = rv.data.decode('utf-8')
     ok_('Record was successfully saved.' == data)
@@ -371,32 +381,34 @@ def test_column_editable_list():
 
     # Test validation error
     rv = client.post('/admin/model1/ajax/update/', data={
-        'enum_field-1': 'problematic-input',
+        'list_form_pk': '1',
+        'enum_field': 'problematic-input',
     })
     eq_(rv.status_code, 500)
 
     # Test invalid primary key
     rv = client.post('/admin/model1/ajax/update/', data={
-        'test1-1000': 'problematic-input',
+        'list_form_pk': '1000',
+        'test1': 'problematic-input',
     })
     data = rv.data.decode('utf-8')
     eq_(rv.status_code, 500)
 
     # Test editing column not in column_editable_list
     rv = client.post('/admin/model1/ajax/update/', data={
-        'test2-1': 'problematic-input',
+        'list_form_pk': '1',
+        'test2': 'problematic-input',
     })
     data = rv.data.decode('utf-8')
-    eq_(rv.status_code, 500)
+    ok_('problematic-input' not in data)
 
     # Test in-line editing for relations
-    view = CustomModelView(Model2, db.session,
-                           column_editable_list=[
-                               'model1'])
+    view = CustomModelView(Model2, db.session, column_editable_list=['model1'])
     admin.add_view(view)
 
     rv = client.post('/admin/model2/ajax/update/', data={
-        'model1-1': '3',
+        'list_form_pk': '1',
+        'model1': '3',
     })
     data = rv.data.decode('utf-8')
     ok_('Record was successfully saved.' == data)
@@ -405,6 +417,58 @@ def test_column_editable_list():
     rv = client.get('/admin/model2/')
     data = rv.data.decode('utf-8')
     ok_('test1_val_3' in data)
+
+
+def test_details_view():
+    app, db, admin = setup()
+
+    Model1, Model2 = create_models(db)
+
+    view_no_details = CustomModelView(Model1, db.session)
+    admin.add_view(view_no_details)
+
+    # fields are scaffolded
+    view_w_details = CustomModelView(Model2, db.session, can_view_details=True)
+    admin.add_view(view_w_details)
+
+    # show only specific fields in details w/ column_details_list
+    string_field_view = CustomModelView(Model2, db.session,
+                                        can_view_details=True,
+                                        column_details_list=["string_field"],
+                                        endpoint="sf_view")
+    admin.add_view(string_field_view)
+
+    fill_db(db, Model1, Model2)
+
+    client = app.test_client()
+
+    # ensure link to details is hidden when can_view_details is disabled
+    rv = client.get('/admin/model1/')
+    data = rv.data.decode('utf-8')
+    ok_('/admin/model1/details/' not in data)
+
+    # ensure link to details view appears
+    rv = client.get('/admin/model2/')
+    data = rv.data.decode('utf-8')
+    ok_('/admin/model2/details/' in data)
+
+    # test redirection when details are disabled
+    rv = client.get('/admin/model1/details/?url=%2Fadmin%2Fmodel1%2F&id=1')
+    eq_(rv.status_code, 302)
+
+    # test if correct data appears in details view when enabled
+    rv = client.get('/admin/model2/details/?url=%2Fadmin%2Fmodel2%2F&id=1')
+    data = rv.data.decode('utf-8')
+    ok_('String Field' in data)
+    ok_('test2_val_1' in data)
+    ok_('test1_val_1' in data)
+
+    # test column_details_list
+    rv = client.get('/admin/sf_view/details/?url=%2Fadmin%2Fsf_view%2F&id=1')
+    data = rv.data.decode('utf-8')
+    ok_('String Field' in data)
+    ok_('test2_val_1' in data)
+    ok_('test1_val_1' not in data)
 
 
 def test_editable_list_special_pks():
@@ -433,7 +497,8 @@ def test_editable_list_special_pks():
 
     # Form - Test basic in-line edit functionality
     rv = client.post('/admin/model1/ajax/update/', data={
-        'val1-1-1': 'change-success-1',
+        'list_form_pk': '1-1',
+        'val1': 'change-success-1',
     })
     data = rv.data.decode('utf-8')
     ok_('Record was successfully saved.' == data)
@@ -674,6 +739,13 @@ def test_column_filters():
     ok_('test2_val_3' in data)
     ok_('test2_val_4' not in data)
 
+    # integer - equals (huge number)
+    rv = client.get('/admin/model2/?flt0_0=6169453081680413441')
+    eq_(rv.status_code, 200)
+    data = rv.data.decode('utf-8')
+    ok_('test2_val_5' in data)
+    ok_('test2_val_4' not in data)
+
     # integer - equals - test validation
     rv = client.get('/admin/model2/?flt0_0=badval')
     eq_(rv.status_code, 200)
@@ -728,6 +800,13 @@ def test_column_filters():
     ok_('test2_val_3' in data)
     ok_('test2_val_4' in data)
 
+    # integer - in list (huge number)
+    rv = client.get('/admin/model2/?flt0_5=6169453081680413441')
+    eq_(rv.status_code, 200)
+    data = rv.data.decode('utf-8')
+    ok_('test2_val_1' not in data)
+    ok_('test2_val_5' in data)
+
     # integer - in list - test validation
     rv = client.get('/admin/model2/?flt0_5=5000%2Cbadval')
     eq_(rv.status_code, 200)
@@ -742,6 +821,49 @@ def test_column_filters():
     ok_('test2_val_2' in data)
     ok_('test2_val_3' not in data)
     ok_('test2_val_4' not in data)
+
+    # Test boolean filter
+    view = CustomModelView(Model1, db.session, column_filters=['bool_field'],
+                           endpoint="_bools")
+    admin.add_view(view)
+
+    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Bool Field']],
+        [
+            (0, 'equals'),
+            (1, 'not equal'),
+        ])
+
+    # boolean - equals - Yes
+    rv = client.get('/admin/_bools/?flt0_0=1')
+    eq_(rv.status_code, 200)
+    data = rv.data.decode('utf-8')
+    ok_('test2_val_1' in data)
+    ok_('test2_val_2' not in data)
+    ok_('test2_val_3' not in data)
+
+    # boolean - equals - No
+    rv = client.get('/admin/_bools/?flt0_0=0')
+    eq_(rv.status_code, 200)
+    data = rv.data.decode('utf-8')
+    ok_('test2_val_1' not in data)
+    ok_('test2_val_2' in data)
+    ok_('test2_val_3' in data)
+
+    # boolean - not equals - Yes
+    rv = client.get('/admin/_bools/?flt0_1=1')
+    eq_(rv.status_code, 200)
+    data = rv.data.decode('utf-8')
+    ok_('test2_val_1' not in data)
+    ok_('test2_val_2' in data)
+    ok_('test2_val_3' in data)
+
+    # boolean - not equals - No
+    rv = client.get('/admin/_bools/?flt0_1=0')
+    eq_(rv.status_code, 200)
+    data = rv.data.decode('utf-8')
+    ok_('test2_val_1' in data)
+    ok_('test2_val_2' not in data)
+    ok_('test2_val_3' not in data)
 
     # Test float filter
     view = CustomModelView(Model2, db.session, column_filters=['float_field'],
@@ -1150,6 +1272,53 @@ def test_column_filters():
     ok_('test1_val_2' not in data)
 
 
+def test_hybrid_property():
+    app, db, admin = setup()
+
+    class Model1(db.Model):
+        id = db.Column(db.Integer, primary_key=True)
+        name = db.Column(db.String)
+        width = db.Column(db.Integer)
+        height = db.Column(db.Integer)
+
+        @hybrid_property
+        def number_of_pixels(self):
+            return self.width * self.height
+
+    db.create_all()
+
+    db.session.add(Model1(id=1, name="test_row_1", width=25, height=25))
+    db.session.add(Model1(id=2, name="test_row_2", width=10, height=10))
+    db.session.commit()
+
+    client = app.test_client()
+
+    view = CustomModelView(
+        Model1, db.session,
+        column_default_sort='number_of_pixels',
+        column_filters = [filters.IntGreaterFilter(Model1.number_of_pixels,
+                                                   'Number of Pixels')]
+    )
+    admin.add_view(view)
+
+    # filters - hybrid_property integer - greater
+    rv = client.get('/admin/model1/?flt0_0=600')
+    eq_(rv.status_code, 200)
+    data = rv.data.decode('utf-8')
+    ok_('test_row_1' in data)
+    ok_('test_row_2' not in data)
+
+    # sorting
+    rv = client.get('/admin/model1/?sort=0')
+    eq_(rv.status_code, 200)
+
+    _, data = view.get_list(0, None, None, None, None)
+
+    eq_(len(data), 2)
+    eq_(data[0].name, 'test_row_2')
+    eq_(data[1].name, 'test_row_1')
+
+
 def test_url_args():
     app, db, admin = setup()
 
@@ -1275,7 +1444,27 @@ def test_form_columns():
 
     ok_(type(form3.model).__name__ == 'QuerySelectField')
 
-    # TODO: form_args
+
+def test_form_args():
+    app, db, admin = setup()
+
+    class Model(db.Model):
+        id = db.Column(db.String, primary_key=True)
+        test = db.Column(db.String, nullable=False)
+
+    db.create_all()
+
+    shared_form_args = {'test': {'validators': [validators.Regexp('test')]}}
+
+    view = CustomModelView(Model, db.session, form_args=shared_form_args)
+    admin.add_view(view)
+
+    create_form = view.create_form()
+    eq_(len(create_form.test.validators), 2)
+
+    # ensure shared field_args don't create duplicate validators
+    edit_form = view.edit_form()
+    eq_(len(edit_form.test.validators), 2)
 
 
 def test_form_override():
@@ -1325,8 +1514,8 @@ def test_form_onetoone():
     eq_(model1.model2, model2)
     eq_(model2.model1, model1)
 
-    eq_(view1._create_form_class.model2.kwargs['widget'].multiple, False)
-    eq_(view2._create_form_class.model1.kwargs['widget'].multiple, False)
+    eq_(view1._create_form_class.model2.field_class.widget.multiple, False)
+    eq_(view2._create_form_class.model1.field_class.widget.multiple, False)
 
 
 def test_relations():
@@ -1708,7 +1897,8 @@ def test_safe_redirect():
     client = app.test_client()
 
     rv = client.post('/admin/model1/new/?url=http://localhost/admin/model2view/',
-                     data=dict(test1='test1large', test2='test2'))
+                     data=dict(test1='test1large', test2='test2',
+                               _continue_editing='Save and Continue Editing'))
 
     eq_(rv.status_code, 302)
     assert_true(rv.location.startswith('http://localhost/admin/model1/edit/'))
@@ -1716,7 +1906,8 @@ def test_safe_redirect():
     assert_true('id=1' in rv.location)
 
     rv = client.post('/admin/model1/new/?url=http://google.com/evil/',
-                     data=dict(test1='test1large', test2='test2'))
+                     data=dict(test1='test1large', test2='test2',
+                               _continue_editing='Save and Continue Editing'))
 
     eq_(rv.status_code, 302)
     assert_true(rv.location.startswith('http://localhost/admin/model1/edit/'))
@@ -1841,3 +2032,52 @@ def test_multipath_joins():
 
     rv = client.get('/admin/model2/')
     eq_(rv.status_code, 200)
+
+
+def test_model_default():
+    app, db, admin = setup()
+    _, Model2 = create_models(db)
+
+    class ModelView(CustomModelView):
+        pass
+
+    view = ModelView(Model2, db.session)
+    admin.add_view(view)
+
+    client = app.test_client()
+    rv = client.post('/admin/model2/new/', data=dict())
+    assert_true(b'This field is required' not in rv.data)
+
+
+def test_export_csv():
+    app, db, admin = setup()
+    Model1, Model2 = create_models(db)
+
+    for x in range(5):
+        fill_db(db, Model1, Model2)
+
+    view = CustomModelView(Model1, db.session, can_export=True,
+                           column_list=['test1', 'test2'], export_max_rows=2,
+                           endpoint='row_limit_2')
+    admin.add_view(view)
+
+    client = app.test_client()
+
+    # test export_max_rows
+    rv = client.get('/admin/row_limit_2/export/csv/')
+    data = rv.data.decode('utf-8')
+    eq_(rv.status_code, 200)
+    ok_("Test1,Test2\r\n"
+        "test1_val_1,test2_val_1\r\n"
+        "test1_val_2,test2_val_2\r\n" == data)
+
+    view = CustomModelView(Model1, db.session, can_export=True,
+                           column_list=['test1', 'test2'],
+                           endpoint='no_row_limit')
+    admin.add_view(view)
+
+    # test row limit without export_max_rows
+    rv = client.get('/admin/no_row_limit/export/csv/')
+    data = rv.data.decode('utf-8')
+    eq_(rv.status_code, 200)
+    ok_(len(data.splitlines()) > 21)
