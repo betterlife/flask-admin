@@ -368,7 +368,7 @@ class ModelView(BaseModelView):
 
                     table = model.__table__
 
-                    if self._need_join(table):
+                    if self._need_join(table) or len(name.split('.')) > 1:
                         path.append(value)
 
                 attr = value
@@ -385,7 +385,7 @@ class ModelView(BaseModelView):
                 column = columns[0]
 
                 # TODO: Use SQLAlchemy "path-finder" to find exact join path to the target property
-                if self._need_join(column.table):
+                if self._need_join(column.table) or len(name.split('.')) > 1:
                     path.append(column.table)
 
         return attr, path
@@ -604,7 +604,7 @@ class ModelView(BaseModelView):
 
                         if joins:
                             self._filter_joins[column] = joins
-                        elif self._need_join(table):
+                        elif self._need_join(table) or len(name.split('.')) > 1:
                             self._filter_joins[column] = [table]
 
                         filters.extend(flt)
@@ -618,7 +618,7 @@ class ModelView(BaseModelView):
 
             column = columns[0]
 
-            if self._need_join(column.table) and name not in self.column_labels:
+            if (self._need_join(column.table) or len(name.split('.')) > 1) and name not in self.column_labels:
                 visible_name = '%s / %s' % (
                     self.get_column_name(column.table.name),
                     self.get_column_name(column.name)
@@ -640,7 +640,7 @@ class ModelView(BaseModelView):
 
             if joins:
                 self._filter_joins[column] = joins
-            elif self._need_join(column.table):
+            elif self._need_join(column.table) or len(name.split('.')) > 1:
                 self._filter_joins[column] = [column.table]
 
             return flt
